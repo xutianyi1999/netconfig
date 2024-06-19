@@ -19,7 +19,7 @@ use windows::Win32::NetworkManagement::IpHelper::{
 };
 use windows::Win32::NetworkManagement::Ndis::{IF_MAX_STRING_SIZE, NET_LUID_LH};
 use windows::Win32::Networking::WinSock::{
-    ADDRESS_FAMILY, AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_INET,
+    AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_INET,
 };
 
 const ERROR_ACCESS_DENIED: HRESULT = Foundation::ERROR_ACCESS_DENIED.to_hresult();
@@ -29,7 +29,7 @@ const ERROR_NOT_FOUND: HRESULT = Foundation::ERROR_NOT_FOUND.to_hresult();
 
 fn convert_sockaddr(sa: SOCKADDR_INET) -> SocketAddr {
     unsafe {
-        match ADDRESS_FAMILY(sa.si_family as _) {
+        match sa.si_family {
             AF_INET => SocketAddr::new(
                 Ipv4Addr::from(sa.Ipv4.sin_addr).into(),
                 u16::from_be(sa.Ipv4.sin_port),
@@ -51,10 +51,10 @@ impl InterfaceHandle {
         };
         let code = unsafe { GetIfEntry2(&mut row) };
 
-        match code.map_err(HRESULT::from) {
+        match code.ok() {
             Ok(_) => Ok(row),
-            Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-            Err(e) => Err(WinError::from(e).into()),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -91,23 +91,23 @@ impl InterfaceExt for Interface {
     fn try_from_luid(luid: u64) -> Result<Interface, Error> {
         let luid = NET_LUID_LH { Value: luid };
         let mut index = 0;
-        unsafe { ConvertInterfaceLuidToIndex(&luid, &mut index)? };
+        unsafe { ConvertInterfaceLuidToIndex(&luid, &mut index).ok()? };
         Ok(Self::from_index_unchecked(index))
     }
 
     fn try_from_guid(guid: u128) -> Result<Interface, Error> {
         let mut luid = NET_LUID_LH::default();
-        unsafe { ConvertInterfaceGuidToLuid(&GUID::from_u128(guid), &mut luid)? };
+        unsafe { ConvertInterfaceGuidToLuid(&GUID::from_u128(guid), &mut luid).ok()? };
         Self::try_from_luid(unsafe { luid.Value })
     }
 
     fn try_from_alias(alias: &str) -> Result<Interface, Error> {
         let mut luid = NET_LUID_LH::default();
         let alias = HSTRING::from(alias);
-        let code = unsafe { ConvertInterfaceAliasToLuid(&alias, &mut luid) }.map_err(HRESULT::from);
+        let code = unsafe { ConvertInterfaceAliasToLuid(&alias, &mut luid) }.ok();
         match code {
             Ok(_) => Self::try_from_luid(unsafe { luid.Value }),
-            Err(ERROR_INVALID_NAME) => Err(Error::InterfaceNotFound),
+            Err(e) if e.code() == ERROR_INVALID_NAME => Err(Error::InterfaceNotFound),
             Err(e) => Err(WinError::from(e).into()),
         }
     }
@@ -116,20 +116,20 @@ impl InterfaceExt for Interface {
         let mut luid = NET_LUID_LH::default();
 
         let code = unsafe { ConvertInterfaceIndexToLuid(self.index()?, &mut luid) };
-        match code.map_err(HRESULT::from) {
+        match code.ok() {
             Ok(_) => Ok(unsafe { luid.Value }),
-            Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-            Err(e) => Err(WinError::from(e).into()),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+            Err(e) => Err(e.into()),
         }
     }
 
     fn guid(&self) -> Result<u128, Error> {
         let mut guid = GUID::zeroed();
         let code = unsafe { ConvertInterfaceLuidToGuid(&self.0.net_luid_lh()?, &mut guid) };
-        match code.map_err(HRESULT::from) {
+        match code.ok() {
             Ok(_) => Ok(guid.into()),
-            Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-            Err(e) => Err(WinError::from(e).into()),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -137,10 +137,10 @@ impl InterfaceExt for Interface {
         let mut alias_buf = vec![0u16; (IF_MAX_STRING_SIZE + 1) as _];
         let code = unsafe { ConvertInterfaceLuidToAlias(&self.0.net_luid_lh()?, &mut alias_buf) };
 
-        match code.map_err(HRESULT::from) {
+        match code.ok() {
             Ok(_) => Ok(U16CString::from_vec_truncate(alias_buf).to_string()?),
-            Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-            Err(e) => Err(WinError::from(e).into()),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -170,12 +170,12 @@ impl InterfaceHandle {
 
     pub fn add_address(&self, network: IpNet) -> Result<(), Error> {
         let entry = self.mib_unicastipaddress_row(network);
-        unsafe { Ok(CreateUnicastIpAddressEntry(&entry)?) }
+        unsafe { Ok(CreateUnicastIpAddressEntry(&entry).ok()?) }
     }
 
     pub fn remove_address(&self, network: IpNet) -> Result<(), Error> {
         let entry = self.mib_unicastipaddress_row(network);
-        unsafe { Ok(DeleteUnicastIpAddressEntry(&entry)?) }
+        unsafe { Ok(DeleteUnicastIpAddressEntry(&entry).ok()?) }
     }
 
     pub fn mtu(&self) -> Result<u32, Error> {
@@ -185,16 +185,16 @@ impl InterfaceHandle {
     pub fn set_mtu(&self, mtu: u32) -> Result<(), Error> {
         for family in [AF_INET, AF_INET6] {
             let mut row = MIB_IPINTERFACE_ROW {
-                Family: family.0 as _,
+                Family: family,
                 InterfaceIndex: self.index,
                 ..Default::default()
             };
 
             let code = unsafe { GetIpInterfaceEntry(&mut row) };
-            match code.map_err(HRESULT::from) {
+            match code.ok() {
                 Ok(_) => Ok(()),
-                Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-                Err(ERROR_NOT_FOUND) => {
+                Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+                Err(e) if e.code() == ERROR_NOT_FOUND => {
                     warn!("Interface not found with family: {:?}", family);
                     continue;
                 }
@@ -204,17 +204,17 @@ impl InterfaceHandle {
             row.NlMtu = mtu;
 
             let code = unsafe { SetIpInterfaceEntry(&mut row) };
-            match code.map_err(HRESULT::from) {
+            match code.ok() {
                 Ok(_) => Ok(()),
-                Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-                Err(ERROR_NOT_FOUND) => {
+                Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+                Err(e) if e.code() == ERROR_NOT_FOUND => {
                     warn!("Interface not found with family: {:?}", family);
                     continue;
                 }
-                Err(ERROR_ACCESS_DENIED) => {
+                Err(e) if e.code() == ERROR_ACCESS_DENIED => {
                     Err(io::Error::from(ErrorKind::PermissionDenied).into())
                 }
-                Err(e) => Err(WinError::from(e).into()),
+                Err(e) => Err(e.into()),
             }?;
         }
         Ok(())
@@ -224,9 +224,9 @@ impl InterfaceHandle {
         let mut name_buf = vec![0u16; (IF_MAX_STRING_SIZE + 1) as _];
         let code = unsafe { ConvertInterfaceLuidToNameW(&self.net_luid_lh()?, &mut name_buf) };
 
-        match code.map_err(HRESULT::from) {
+        match code.ok() {
             Ok(_) => Ok(U16CString::from_vec_truncate(name_buf).to_string()?),
-            Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
             Err(e) => Err(WinError::from(e).into()),
         }
     }
@@ -235,10 +235,10 @@ impl InterfaceHandle {
         let mut luid = NET_LUID_LH::default();
         let name = HSTRING::from(name);
         let code = unsafe { ConvertInterfaceNameToLuidW(&name, &mut luid) };
-        match code.map_err(HRESULT::from) {
+        match code.ok() {
             Ok(_) => Interface::try_from_luid(unsafe { luid.Value }),
-            Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-            Err(e) => Err(WinError::from(e).into()),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -249,10 +249,10 @@ impl InterfaceHandle {
     pub fn try_from_index(index: u32) -> Result<Interface, Error> {
         let mut luid = NET_LUID_LH::default();
         let code = unsafe { ConvertInterfaceIndexToLuid(index, &mut luid) };
-        match code.map_err(HRESULT::from) {
+        match code.ok() {
             Ok(_) => Ok(Interface::from_index_unchecked(index)),
-            Err(ERROR_FILE_NOT_FOUND) => Err(Error::InterfaceNotFound),
-            Err(e) => Err(WinError::from(e).into()),
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND => Err(Error::InterfaceNotFound),
+            Err(e) => Err(e.into()),
         }
     }
 
