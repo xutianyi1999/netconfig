@@ -5,9 +5,10 @@ use crate::{Error, Interface};
 use advmac::MacAddr6;
 use delegate::delegate;
 use ipnet::IpNet;
-use nix::sys::socket::{SockaddrIn, SockaddrIn6};
+use nix::sys::socket::{SockaddrIn, SockaddrIn6, SockaddrLike};
 use std::net;
 use std::os::unix::io::AsRawFd;
+use crate::sys::ifreq::ifreq_ifru;
 
 pub trait InterfaceExt {
     fn set_up(&self, v: bool) -> Result<(), Error>;
@@ -59,8 +60,29 @@ impl InterfaceHandle {
         }
     }
 
-    pub fn remove_address(&self, _network: IpNet) -> Result<(), Error> {
-        todo!()
+    pub fn remove_address(&self, network: IpNet) -> Result<(), Error> {
+        let socket = dummy_socket()?;
+        let name = self.name()?;
+        let mut ifr_ifru = ifreq::ifreq_ifru::default();
+
+        match network {
+            IpNet::V4(network) => {
+                let addr = SockaddrIn::from(net::SocketAddrV4::new(network.addr(), 0));
+                ifr_ifru.ifru_addr = unsafe { *addr.as_ptr() };
+            }
+            IpNet::V6(network) => {
+                let addr = SockaddrIn6::from(net::SocketAddrV6::new(network.addr(), 0, 0, 0));
+                ifr_ifru.ifru_addr = unsafe { *addr.as_ptr() };
+            }
+        };
+
+        let req = ifreq::ifreq {
+            ifr_ifrn: name.parse().unwrap(),
+            ifr_ifru
+        };
+
+        unsafe { ioctls::siocdifaddr(socket.as_raw_fd(), &req)? };
+        Ok(())
     }
 
     pub fn hwaddress(&self) -> Result<MacAddr6, Error> {
