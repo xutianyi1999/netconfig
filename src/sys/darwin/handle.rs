@@ -8,7 +8,6 @@ use ipnet::IpNet;
 use nix::sys::socket::{SockaddrIn, SockaddrIn6, SockaddrLike};
 use std::net;
 use std::os::unix::io::AsRawFd;
-use crate::sys::ifreq::ifreq_ifru;
 
 pub trait InterfaceExt {
     fn set_up(&self, v: bool) -> Result<(), Error>;
